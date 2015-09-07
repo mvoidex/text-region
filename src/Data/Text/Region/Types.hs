@@ -1,14 +1,17 @@
-{-# LANGUAGE TemplateHaskell, RankNTypes, TypeSynonymInstances, FlexibleInstances, OverloadedStrings #-}
+{-# LANGUAGE TemplateHaskell, RankNTypes, TypeSynonymInstances, FlexibleInstances, OverloadedStrings, GeneralizedNewtypeDeriving #-}
 
 module Data.Text.Region.Types (
 	Point(..), pointLine, pointColumn, Size, (.-.), (.+.),
 	Region(..), regionFrom, regionTo,
 	Map(..),
 	Contents,
-	Edit(..), editUpdate,
+	Edit(..), editUpdate, editMap,
 	Prefix(..), prefixLines, prefixLine, Suffix(..), suffixLine, suffixLines, prefix, suffix, concatCts, splitCts,
 	Editable(..), contents, measure,
 	Replace(..), replaceRegion, replaceWith,
+	ActionStack(..), undoStack, redoStack, emptyStack,
+	EditState(..), editState, history, edited,
+	EditorM(..),
 
 	module Data.Group,
 	module Control.Category.Inv
@@ -19,6 +22,7 @@ import Prelude.Unicode
 
 import Control.Category
 import Control.Lens hiding ((.=))
+import Control.Monad.State
 import Data.Aeson
 import Data.Group
 import Data.List
@@ -105,13 +109,14 @@ instance Group Map where
 type Contents a = [a]
 
 data Edit a = Edit {
-	_editUpdate ∷ Inv (Map, Contents a) (Map, Contents a) }
+	_editUpdate ∷ Inv (Map, Contents a) (Map, Contents a),
+	_editMap ∷ Map }
 
 makeLenses ''Edit
 
 instance Monoid (Edit a) where
-	mempty = Edit id
-	Edit l `mappend` Edit r = Edit $ l . r
+	mempty = Edit id mempty
+	Edit l lm `mappend` Edit r rm = Edit (l . r) (lm `mappend` rm)
 
 data Prefix a = Prefix {
 	_prefixLines ∷ [a],
@@ -185,3 +190,23 @@ instance (Editable s, ToJSON s) ⇒ ToJSON (Replace s) where
 
 instance (Editable s, FromJSON s) ⇒ FromJSON (Replace s) where
 	parseJSON = withObject "edit" $ \v → Replace <$> v .: "region" <*> v .: "contents"
+
+data ActionStack e = ActionStack {
+	_undoStack ∷ [e],
+	_redoStack ∷ [e] }
+
+makeLenses ''ActionStack
+
+emptyStack ∷ ActionStack e
+emptyStack = ActionStack [] []
+
+data EditState e s = EditState {
+	_history ∷ ActionStack (e s),
+	_edited ∷ Contents s }
+
+makeLenses ''EditState
+
+editState ∷ Editable s ⇒ s → EditState e s
+editState x = EditState emptyStack (x ^. contents)
+
+newtype EditorM e s a = EditorM { runEditorM ∷ State (EditState e s) a } deriving (Applicative, Functor, Monad, MonadState (EditState e s))
