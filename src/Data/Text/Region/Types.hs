@@ -1,20 +1,18 @@
-{-# LANGUAGE TemplateHaskell, RankNTypes, TypeSynonymInstances, FlexibleInstances, OverloadedStrings, GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE TemplateHaskell, RankNTypes, TypeSynonymInstances, FlexibleInstances, OverloadedStrings, GeneralizedNewtypeDeriving, FlexibleContexts #-}
 
 module Data.Text.Region.Types (
 	Point(..), pointLine, pointColumn, Size, (.-.), (.+.),
 	Region(..), regionFrom, regionTo,
 	Map(..),
-	Contents,
-	Edit(..), editUpdate, editMap,
-	Prefix(..), prefixLines, prefixLine, Suffix(..), suffixLine, suffixLines, prefix, suffix, concatCts, splitCts,
-	Editable(..), contents, measure,
-	Replace(..), replaceRegion, replaceWith,
+	Contents, emptyContents,
+	concatCts, splitCts, splitted,
+	Editable(..), contents, by, measure,
+	Replace(..), replaceRegion, replaceWith, Chain(..), chain,
 	ActionStack(..), undoStack, redoStack, emptyStack,
-	EditState(..), editState, history, edited,
+	EditState(..), editState, history, edited, groupMap,
 	EditorM(..),
 
-	module Data.Group,
-	module Control.Category.Inv
+	module Data.Group
 	) where
 
 import Prelude hiding (id, (.))
@@ -24,12 +22,11 @@ import Control.Category
 import Control.Lens hiding ((.=))
 import Control.Monad.State
 import Data.Aeson
+import qualified Data.ByteString.Lazy.Char8 as L
 import Data.Group
 import Data.List
 import Data.Text (Text)
 import qualified Data.Text as T
-
-import Control.Category.Inv
 
 -- | Point at text: zero-based line and column
 data Point = Point {
@@ -100,7 +97,7 @@ newtype Map = Map { mapIso :: Iso' Region Region }
 
 instance Monoid Map where
 	mempty = Map $ iso id id
-	Map l `mappend` Map r = Map (l . r)
+	Map l `mappend` Map r = Map (r . l)
 
 instance Group Map where
 	invert (Map f) = Map (from f)
@@ -108,46 +105,22 @@ instance Group Map where
 -- | Contents is list of lines
 type Contents a = [a]
 
-data Edit a = Edit {
-	_editUpdate ∷ Inv (Map, Contents a) (Map, Contents a),
-	_editMap ∷ Map }
+emptyContents ∷ Monoid a ⇒ Contents a
+emptyContents = [mempty]
 
-makeLenses ''Edit
+checkCts ∷ Contents a → Contents a
+checkCts [] = error "Contents can't be empty"
+checkCts cs = cs
 
-instance Monoid (Edit a) where
-	mempty = Edit id mempty
-	Edit l lm `mappend` Edit r rm = Edit (l . r) (lm `mappend` rm)
+concatCts ∷ Monoid a ⇒ Contents a → Contents a → Contents a
+concatCts ls rs = init (checkCts ls) ++ [last (checkCts ls) `mappend` head (checkCts rs)] ++ tail (checkCts rs)
 
-data Prefix a = Prefix {
-	_prefixLines ∷ [a],
-	_prefixLine ∷ a }
-
-makeLenses ''Prefix
-
-instance Functor Prefix where
-	fmap f (Prefix ls l) = Prefix (fmap f ls) (f l)
-
-data Suffix a = Suffix {
-	_suffixLine ∷ a,
-	_suffixLines ∷ [a] }
-
-makeLenses ''Suffix
-
-instance Functor Suffix where
-	fmap f (Suffix l ls) = Suffix (f l) (fmap f ls)
-
-prefix ∷ Contents a → Prefix a
-prefix cts = Prefix (init cts) (last cts)
-
-suffix ∷ Contents a → Suffix a
-suffix cts = Suffix (head cts) (tail cts)
-
-concatCts ∷ Monoid a ⇒ Prefix a → Suffix a → Contents a
-concatCts (Prefix ps p) (Suffix s ss) = ps ++ [p `mappend` s] ++ ss
-
-splitCts ∷ Editable a ⇒ Point → Contents a → (Prefix a, Suffix a)
-splitCts (Point l c) cts = (Prefix (take l cts) p, Suffix s (drop (succ l) cts)) where
+splitCts ∷ Editable a ⇒ Point → Contents a → (Contents a, Contents a)
+splitCts (Point l c) cts = (take l cts ++ [p], s : drop (succ l) cts) where
 	(p, s) = splitContents c (cts !! l)
+
+splitted ∷ Editable a ⇒ Point → Iso' (Contents a) (Contents a, Contents a)
+splitted p = iso (splitCts p) (uncurry concatCts)
 
 class Monoid a ⇒ Editable a where
 	splitContents ∷ Int → a → (a, a)
@@ -157,6 +130,9 @@ class Monoid a ⇒ Editable a where
 
 contents ∷ (Editable a, Editable b) ⇒ Iso a b (Contents a) (Contents b)
 contents = iso splitLines joinLines
+
+by ∷ Editable a ⇒ a → Contents a
+by = splitLines
 
 instance Editable String where
 	splitContents = splitAt
@@ -181,7 +157,7 @@ measure cts = Point (pred $ length cts) (contentsLength $ last cts)
 data Replace s = Replace {
 	_replaceRegion ∷ Region,
 	_replaceWith ∷ Contents s }
-		deriving (Eq, Read, Show)
+		deriving (Eq)
 
 makeLenses ''Replace
 
@@ -190,6 +166,14 @@ instance (Editable s, ToJSON s) ⇒ ToJSON (Replace s) where
 
 instance (Editable s, FromJSON s) ⇒ FromJSON (Replace s) where
 	parseJSON = withObject "edit" $ \v → Replace <$> v .: "region" <*> v .: "contents"
+
+instance (Editable s, ToJSON s) ⇒ Show (Replace s) where
+	show = L.unpack ∘ encode
+
+newtype Chain e s = Chain {
+	_chain ∷ [e s] } deriving (Eq, Show, Monoid)
+
+makeLenses ''Chain
 
 data ActionStack e = ActionStack {
 	_undoStack ∷ [e],
@@ -202,11 +186,12 @@ emptyStack = ActionStack [] []
 
 data EditState e s = EditState {
 	_history ∷ ActionStack (e s),
-	_edited ∷ Contents s }
+	_edited ∷ Contents s,
+	_groupMap ∷ Maybe Map }
 
 makeLenses ''EditState
 
 editState ∷ Editable s ⇒ s → EditState e s
-editState x = EditState emptyStack (x ^. contents)
+editState x = EditState emptyStack (x ^. contents) Nothing
 
 newtype EditorM e s a = EditorM { runEditorM ∷ State (EditState e s) a } deriving (Applicative, Functor, Monad, MonadState (EditState e s))

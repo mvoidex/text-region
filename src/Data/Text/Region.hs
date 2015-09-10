@@ -1,12 +1,11 @@
-{-# LANGUAGE RankNTypes, TupleSections #-}
+{-# LANGUAGE RankNTypes, TupleSections, FlexibleContexts, MultiParamTypeClasses, FlexibleInstances #-}
 
 module Data.Text.Region (
-	pt, lineStart, regionLength, till, linesSize, regionLines, emptyRegion, line,
-	regionSize, expandLines, atRegion, applyMap, applyStart, cutMap, insertMap,
+	pt, start, lineStart, regionLength, till, linesSize, regionLines, emptyRegion, line,
+	regionSize, expandLines, atRegion, ApplyMap(..), cutMap, insertMap,
 	cutRegion, insertRegion,
-	EditAction(..), undo, edit,
-	replaceEdit, replaces,
-	editor, editor_, performEdit, doEdit, undoEdit, redoEdit,
+	EditAction(..), cut, paste, overwrite, inverse, applyEdit, apply,
+	editor, editor_, edit, edit_, grouped, push, mapGrouped, run_, run, undo, redo,
 
 	module Data.Text.Region.Types
 	) where
@@ -23,6 +22,9 @@ import Data.Text.Region.Types
 
 pt ∷ Int → Int → Point
 pt = Point
+
+start ∷ Point
+start = pt 0 0
 
 lineStart ∷ Int → Point
 lineStart l = pt l 0
@@ -65,21 +67,23 @@ expandLines (Region f t) = lineStart (f ^. pointLine) `till` lineStart (succ $ t
 -- | Get contents at @Region@
 atRegion ∷ Editable s ⇒ Region → Lens' (Contents s) (Contents s)
 atRegion r = lens fromc toc where
-	fromc cts =
-		over _head (snd ∘ splitContents (r ^. regionFrom . pointColumn)) ∘
-		over _last (fst ∘ splitContents (r ^. regionTo . pointColumn)) ∘
-		take (r ^. regionLines) ∘
-		drop (r ^. regionFrom . pointLine) $
-		cts
-	toc cts cts' = snd $ (replace r cts' ^. editUpdate) `appInv` (mempty, cts)
+	fromc cts = cts ^. splitted (r ^. regionTo) . _1 . splitted (r ^. regionFrom) . _2
+	toc cts cts' = (cts ^. splitted (r ^. regionFrom) . _1) `concatCts` cts' `concatCts` (cts ^. splitted (r ^. regionTo) . _2)
 
--- | Apply mapping
-applyMap ∷ Map → Region → Region
-applyMap = view ∘ mapIso
+class ApplyMap a where
+	applyMap ∷ Map → a → a
 
--- | Apply mapping to starting position only
-applyStart ∷ Map → Region → Region
-applyStart m r = applyMap m $ (r ^. regionFrom) `regionSize` (r ^. regionLength)
+instance ApplyMap Region where
+	applyMap = view ∘ mapIso
+
+instance ApplyMap Point where
+	applyMap m p = view regionFrom $ applyMap m (p `till` p)
+
+instance ApplyMap (Replace s) where
+	applyMap m (Replace r w) = Replace (applyMap m r) w
+
+instance ApplyMap (e s) ⇒ ApplyMap (Chain e s) where
+	applyMap m (Chain rs) = Chain (map (applyMap m) rs)
 
 -- | Cut @Region@ mapping
 cutMap ∷ Region → Map
@@ -101,89 +105,93 @@ insertRegion (Region is ie) (Region s e) = Region
 	(if is < s then (s .-. is) .+. ie else s)
 	(if is < e then (e .-. is) .+. ie else e)
 
-class EditAction e where
-	cut ∷ Editable s ⇒ Region → e s
-	insert ∷ Editable s ⇒ Point → Contents s → e s
-	replace ∷ Editable s ⇒ Region → Contents s → e s
-	perform ∷ Editable s ⇒ Contents s → e s → (Contents s, e s)
-	regionMap ∷ Editable s ⇒ e s → Region → Region
+class (Editable s, ApplyMap (e s)) ⇒ EditAction e s where
+	replace ∷ Region → Contents s → e s
+	actionMap ∷ e s → Map
+	perform ∷ e s → State (Contents s) (e s)
 
-undo ∷ (EditAction e, Editable s) ⇒ Contents s → e s → e s
-undo cts act = snd $ cts `perform` act
+cut ∷ EditAction e s ⇒ Region → e s
+cut r = replace r emptyContents
 
-edit ∷ (EditAction e, Editable s) ⇒ e s → Contents s → Contents s
-edit act cts = fst $ cts `perform` act
+paste ∷ EditAction e s ⇒ Point → Contents s → e s
+paste p = replace (p `till` p)
 
-mkEdit ∷ Editable s ⇒ (Map → Contents s → (Contents s, Edit s)) → Map → Edit s
-mkEdit fn m = Edit (Inv fn') m where
-	fn' (m', cts') = ((m `mappend` m', ) *** view editUpdate) $ fn m' cts'
+overwrite ∷ EditAction e s ⇒ Point → Contents s → e s
+overwrite p c = replace (p `regionSize` measure c) c
 
-instance EditAction Edit where
-	cut r = mkEdit cut' (cutMap r) where
-		cut' m cts = (cts', insert (r ^. regionFrom) (cts ^. atRegion r')) where
-			r' = m `applyMap` r
-			cts' = fst (splitCts (r' ^. regionFrom) cts) `concatCts` snd (splitCts (r' ^. regionTo) cts)
-	insert p txt = mkEdit insert' (insertMap (p `regionSize` measure txt)) where
-		insert' m cts = (cts', cut (p `regionSize` measure txt)) where
-			p' = (m `applyMap` (p `till` p)) ^. regionFrom
-			cts' = pre' `concatCts` suffix (prefix txt `concatCts` post') where
-				(pre', post') = splitCts p' cts
-	replace r txt = mkEdit replace' (insertMap ((r ^. regionFrom) `regionSize` measure txt) `mappend` cutMap r) where
-		replace' m cts = (cts', replace ((r ^. regionFrom) `regionSize` measure txt) (cts ^. atRegion r')) where
-			r' = m `applyMap` r
-			cts' = pre' `concatCts` suffix (prefix txt `concatCts` post') where
-				pre' = fst (splitCts (r' ^. regionFrom) cts)
-				post' = snd (splitCts (r' ^. regionTo) cts)
-	perform cts (Edit f m) = (view _2 *** (`Edit` invert m)) $ runInv f (mempty, cts)
-	regionMap (Edit _ m) = applyMap m
+inverse ∷ EditAction e s ⇒ Contents s → e s → e s
+inverse cts act = evalState (perform act) cts
 
-instance EditAction Replace where
-	cut r = Replace r [mempty]
-	insert p = Replace (p `till` p)
+applyEdit ∷ EditAction e s ⇒ e s → Contents s → Contents s
+applyEdit act = snd ∘ runState (perform act)
+
+apply ∷ EditAction Replace s ⇒ Chain Replace s → Contents s → Contents s
+apply = applyEdit
+
+instance Editable s ⇒ EditAction Replace s where
 	replace = Replace
-	perform cts (Replace r w) = (edit' (replace r w) cts, Replace ((r ^. regionFrom) `regionSize` measure w) (cts ^. atRegion r)) where
-		edit' ∷ Editable s ⇒ Edit s → Contents s → Contents s
-		edit' = edit
-	regionMap (Replace r w) = applyMap (insertMap ((r ^. regionFrom) `regionSize` measure w) `mappend` cutMap r)
+	actionMap (Replace r w) = insertMap ((r ^. regionFrom) `regionSize` measure w) `mappend` cutMap r
+	perform (Replace r w) = state $ \cts → (Replace ((r ^. regionFrom) `regionSize` measure w) (cts ^. atRegion r), atRegion r .~ w $ cts)
 
-replaceEdit ∷ Editable s ⇒ Replace s → Edit s
-replaceEdit r = replace (r ^. replaceRegion) (r ^. replaceWith)
+instance EditAction e s ⇒ EditAction (Chain e) s where
+	replace rgn txt = Chain [replace rgn txt]
+	actionMap (Chain []) = mempty
+	actionMap (Chain (r : rs)) = actionMap (applyMap (actionMap r) (Chain rs)) `mappend` actionMap r
+	perform (Chain rs) = (Chain ∘ reverse) <$> go mempty rs where
+		go _ [] = return []
+		go m (c : cs) = (:) <$> perform (applyMap m c) <*> go (actionMap (applyMap m c) `mappend` m) cs
 
-replaces ∷ Editable s ⇒ [Replace s] → Edit s
-replaces = mconcat ∘ map replaceEdit
-
-editor ∷ (EditAction e, Editable s) ⇒ s → EditorM e s a → (a, s)
+editor ∷ EditAction e s ⇒ s → EditorM e s a → (a, s)
 editor txt act = second (view $ edited . from contents) $ runState (runEditorM act) (editState txt)
 
-editor_ ∷ (EditAction e, Editable s) ⇒ s → EditorM e s a → s
+editor_ ∷ EditAction e s ⇒ s → EditorM e s a → s
 editor_ txt = snd ∘ editor txt
 
-performEdit ∷ (EditAction e, Editable s) ⇒ e s → EditorM e s (e s)
-performEdit edit' = do
-	cts ← gets (view edited)	
+edit ∷ EditAction Replace s ⇒ s → EditorM (Chain Replace) s a → (a, s)
+edit = editor
+
+edit_ ∷ EditAction Replace s ⇒ s → EditorM (Chain Replace) s a → s
+edit_ = editor_
+
+grouped ∷ EditAction e s ⇒ EditorM e s a → EditorM e s a
+grouped act = do
+	modify (set groupMap (Just mempty))
+	x ← act
+	modify (set groupMap Nothing)
+	return x
+
+push ∷ EditAction e s ⇒ e s → EditorM e s ()
+push e = modify (over (history . undoStack) (e :)) >> modify (set (history . redoStack) [])
+
+mapGrouped ∷ EditAction e s ⇒ e s → EditorM e s (e s)
+mapGrouped e = do
+	m ← gets (view groupMap)
+	return $ maybe id applyMap m e
+
+run_ ∷ EditAction e s ⇒ e s → EditorM e s (e s)
+run_ e = do
+	cts ← gets (view edited)
 	let
-		(cts', undo') = perform cts edit'
+		(undo', cts') = runState (perform e) cts
 	modify (set edited cts')
+	modify (over (groupMap . _Just) (mappend $ actionMap e))
 	return undo'
 
-doEdit ∷ (EditAction e, Editable s) ⇒ e s → EditorM e s ()
-doEdit edit' = do
-	undo' ← performEdit edit'
-	modify (over (history . undoStack) (undo' :))
-	modify (set (history . redoStack) [])
+run ∷ EditAction e s ⇒ e s → EditorM e s ()
+run e = mapGrouped e >>= run_ >>= push
 
-undoEdit ∷ (EditAction e, Editable s) ⇒ EditorM e s ()
-undoEdit = do
+undo ∷ EditAction e s ⇒ EditorM e s ()
+undo = do
 	us@(~(u:_)) ← gets (view $ history . undoStack)
 	unless (null us) $ do
-		redo' ← performEdit u
+		redo' ← run_ u
 		modify (over (history . undoStack) tail)
 		modify (over (history . redoStack) (redo' :))
 
-redoEdit ∷ (EditAction e, Editable s) ⇒ EditorM e s ()
-redoEdit = do
+redo ∷ EditAction e s ⇒ EditorM e s ()
+redo = do
 	rs@(~(r:_)) ← gets (view $ history . redoStack)
 	unless (null rs) $ do
-		undo' ← performEdit r
+		undo' ← run_ r
 		modify (over (history . redoStack) tail)
 		modify (over (history . undoStack) (undo' :))
