@@ -5,7 +5,7 @@ module Data.Text.Region (
 	regionSize, expandLines, atRegion, ApplyMap(..), cutMap, insertMap,
 	cutRegion, insertRegion,
 	EditAction(..), cut, paste, overwrite, inverse, applyEdit, apply,
-	edit, edit_, grouped, push, mapGrouped, run_, run, undo, redo,
+	edit, edit_, grouped, push, mapGrouped, run_, run, undo, redo, update,
 
 	module Data.Text.Region.Types
 	) where
@@ -189,3 +189,8 @@ redo = do
 		undo' ← run_ r
 		modify (over (history . redoStack) tail)
 		modify (over (history . undoStack) (undo' :))
+
+update ∷ (EditAction Replace s, ApplyMap a) ⇒ a → EditM s a
+update x = do
+	m ← gets (view groupMap)
+	return $ maybe id applyMap m x
