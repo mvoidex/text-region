@@ -162,10 +162,10 @@ data Replace s = Replace {
 makeLenses ''Replace
 
 instance (Editable s, ToJSON s) ⇒ ToJSON (Replace s) where
-	toJSON (Replace e c) = object ["region" .= e, "contents" .= c]
+	toJSON (Replace e c) = object ["region" .= e, "contents" .= view (from contents) c]
 
 instance (Editable s, FromJSON s) ⇒ FromJSON (Replace s) where
-	parseJSON = withObject "edit" $ \v → Replace <$> v .: "region" <*> v .: "contents"
+	parseJSON = withObject "edit" $ \v → Replace <$> v .: "region" <*> (view contents <$> v .: "contents")
 
 instance (Editable s, ToJSON s) ⇒ Show (Replace s) where
 	show = L.unpack ∘ encode

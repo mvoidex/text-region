@@ -17,6 +17,7 @@ import Control.Arrow
 import Control.Category
 import Control.Lens
 import Control.Monad.State
+import Data.Maybe (isJust)
 
 import Data.Text.Region.Types
 
@@ -149,9 +150,10 @@ edit_ txt = snd ∘ edit txt
 
 grouped ∷ EditAction Replace s ⇒ EditM s a → EditM s a
 grouped act = do
-	modify (set groupMap (Just mempty))
+	inGroup ← gets (isJust . view groupMap)
+	unless inGroup $ modify (set groupMap (Just mempty))
 	x ← act
-	modify (set groupMap Nothing)
+	unless inGroup $ modify (set groupMap Nothing)
 	return x
 
 push ∷ EditAction Replace s ⇒ Edit s → EditM s ()
