@@ -5,7 +5,7 @@ module Data.Text.Region (
 	regionSize, expandLines, atRegion, ApplyMap(..), cutMap, insertMap,
 	cutRegion, insertRegion,
 	EditAction(..), cut, paste, overwrite, inverse, applyEdit, apply,
-	editor, editor_, edit, edit_, grouped, push, mapGrouped, run_, run, undo, redo,
+	edit, edit_, grouped, push, mapGrouped, run_, run, undo, redo,
 
 	module Data.Text.Region.Types
 	) where
@@ -125,7 +125,7 @@ inverse cts act = evalState (perform act) cts
 applyEdit ∷ EditAction e s ⇒ e s → Contents s → Contents s
 applyEdit act = snd ∘ runState (perform act)
 
-apply ∷ EditAction Replace s ⇒ Chain Replace s → Contents s → Contents s
+apply ∷ EditAction Replace s ⇒ Edit s → Contents s → Contents s
 apply = applyEdit
 
 instance Editable s ⇒ EditAction Replace s where
@@ -141,34 +141,28 @@ instance EditAction e s ⇒ EditAction (Chain e) s where
 		go _ [] = return []
 		go m (c : cs) = (:) <$> perform (applyMap m c) <*> go (actionMap (applyMap m c) `mappend` m) cs
 
-editor ∷ EditAction e s ⇒ s → EditorM e s a → (a, s)
-editor txt act = second (view $ edited . from contents) $ runState (runEditorM act) (editState txt)
+edit ∷ EditAction Replace s ⇒ s → EditM s a → (a, s)
+edit txt act = second (view $ edited . from contents) $ runState (runEditM act) (editState txt)
 
-editor_ ∷ EditAction e s ⇒ s → EditorM e s a → s
-editor_ txt = snd ∘ editor txt
+edit_ ∷ EditAction Replace s ⇒ s → EditM s a → s
+edit_ txt = snd ∘ edit txt
 
-edit ∷ EditAction Replace s ⇒ s → EditorM (Chain Replace) s a → (a, s)
-edit = editor
-
-edit_ ∷ EditAction Replace s ⇒ s → EditorM (Chain Replace) s a → s
-edit_ = editor_
-
-grouped ∷ EditAction e s ⇒ EditorM e s a → EditorM e s a
+grouped ∷ EditAction Replace s ⇒ EditM s a → EditM s a
 grouped act = do
 	modify (set groupMap (Just mempty))
 	x ← act
 	modify (set groupMap Nothing)
 	return x
 
-push ∷ EditAction e s ⇒ e s → EditorM e s ()
+push ∷ EditAction Replace s ⇒ Edit s → EditM s ()
 push e = modify (over (history . undoStack) (e :)) >> modify (set (history . redoStack) [])
 
-mapGrouped ∷ EditAction e s ⇒ e s → EditorM e s (e s)
+mapGrouped ∷ EditAction Replace s ⇒ Edit s → EditM s (Edit s)
 mapGrouped e = do
 	m ← gets (view groupMap)
 	return $ maybe id applyMap m e
 
-run_ ∷ EditAction e s ⇒ e s → EditorM e s (e s)
+run_ ∷ EditAction Replace s ⇒ Edit s → EditM s (Edit s)
 run_ e = do
 	cts ← gets (view edited)
 	let
@@ -177,10 +171,10 @@ run_ e = do
 	modify (over (groupMap . _Just) (mappend $ actionMap e))
 	return undo'
 
-run ∷ EditAction e s ⇒ e s → EditorM e s ()
+run ∷ EditAction Replace s ⇒ Edit s → EditM s ()
 run e = mapGrouped e >>= run_ >>= push
 
-undo ∷ EditAction e s ⇒ EditorM e s ()
+undo ∷ EditAction Replace s ⇒ EditM s ()
 undo = do
 	us@(~(u:_)) ← gets (view $ history . undoStack)
 	unless (null us) $ do
@@ -188,7 +182,7 @@ undo = do
 		modify (over (history . undoStack) tail)
 		modify (over (history . redoStack) (redo' :))
 
-redo ∷ EditAction e s ⇒ EditorM e s ()
+redo ∷ EditAction Replace s ⇒ EditM s ()
 redo = do
 	rs@(~(r:_)) ← gets (view $ history . redoStack)
 	unless (null rs) $ do

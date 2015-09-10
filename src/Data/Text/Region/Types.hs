@@ -7,10 +7,10 @@ module Data.Text.Region.Types (
 	Contents, emptyContents,
 	concatCts, splitCts, splitted,
 	Editable(..), contents, by, measure,
-	Replace(..), replaceRegion, replaceWith, Chain(..), chain,
+	Replace(..), replaceRegion, replaceWith, Chain(..), chain, Edit,
 	ActionStack(..), undoStack, redoStack, emptyStack,
 	EditState(..), editState, history, edited, groupMap,
-	EditorM(..),
+	EditM(..),
 
 	module Data.Group
 	) where
@@ -175,6 +175,8 @@ newtype Chain e s = Chain {
 
 makeLenses ''Chain
 
+type Edit s = Chain Replace s
+
 data ActionStack e = ActionStack {
 	_undoStack ∷ [e],
 	_redoStack ∷ [e] }
@@ -184,14 +186,14 @@ makeLenses ''ActionStack
 emptyStack ∷ ActionStack e
 emptyStack = ActionStack [] []
 
-data EditState e s = EditState {
-	_history ∷ ActionStack (e s),
+data EditState s = EditState {
+	_history ∷ ActionStack (Edit s),
 	_edited ∷ Contents s,
 	_groupMap ∷ Maybe Map }
 
 makeLenses ''EditState
 
-editState ∷ Editable s ⇒ s → EditState e s
+editState ∷ Editable s ⇒ s → EditState s
 editState x = EditState emptyStack (x ^. contents) Nothing
 
-newtype EditorM e s a = EditorM { runEditorM ∷ State (EditState e s) a } deriving (Applicative, Functor, Monad, MonadState (EditState e s))
+newtype EditM s a = EditM { runEditM ∷ State (EditState s) a } deriving (Applicative, Functor, Monad, MonadState (EditState s))
