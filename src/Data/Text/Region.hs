@@ -5,7 +5,7 @@ module Data.Text.Region (
 	regionSize, expandLines, atRegion, ApplyMap(..), cutMap, insertMap,
 	cutRegion, insertRegion,
 	EditAction(..), cut, paste, overwrite, inverse, applyEdit, apply,
-	edit, edit_, grouped, push, mapGrouped, run_, run, undo, redo, update,
+	edit, edit_, push, run_, run, undo, redo,
 
 	module Data.Text.Region.Types
 	) where
@@ -17,25 +17,28 @@ import Control.Arrow
 import Control.Category
 import Control.Lens
 import Control.Monad.State
-import Data.Maybe (isJust)
 
 import Data.Text.Region.Types
 
+-- | Make 'Point' from line and column
 pt ∷ Int → Int → Point
 pt = Point
 
+-- | 'Point' at the beginning
 start ∷ Point
 start = pt 0 0
 
+-- | 'Point' at the beginning of line
 lineStart ∷ Int → Point
 lineStart l = pt l 0
 
+-- | Regions length
 regionLength ∷ Lens' Region Size
 regionLength = lens fromr tor where
 	fromr (Region f t) = t .-. f
 	tor (Region f _) sz = Region f (f .+. sz)
 
--- | Region from @Point@ to @Point@
+-- | Region from one 'Point' to another
 till ∷ Point → Point → Region
 l `till` r = Region (min l r) (max l r)
 
@@ -43,13 +46,13 @@ l `till` r = Region (min l r) (max l r)
 linesSize ∷ Int → Size
 linesSize = pt 0
 
--- @Region@ height in lines, any @Region@ at least of line height 1
+-- 'Region' height in lines, any 'Region' at least of line height 1
 regionLines ∷ Lens' Region Int
 regionLines = lens fromr tor where
 	fromr (Region f t) = succ $ (t ^. pointLine) - (f ^. pointLine)
 	tor (Region f t) l = Region f (set pointLine (f ^. pointLine + l) t)
 
--- | Is @Region@ empty
+-- | Is 'Region' empty
 emptyRegion ∷ Region → Bool
 emptyRegion r = r ^. regionFrom ≡ r ^. regionTo
 
@@ -57,15 +60,15 @@ emptyRegion r = r ^. regionFrom ≡ r ^. regionTo
 line ∷ Int → Region
 line l = lineStart l `till` lineStart (succ l)
 
--- | Make @Region@ by start position and @Size@
+-- | Make 'Region' by start position and 'Size'
 regionSize ∷ Point → Size → Region
 regionSize pt' sz = pt' `till` (pt' .+. sz)
 
--- | Expand @Region@ to contain full lines
+-- | Expand 'Region' to contain full lines
 expandLines ∷ Region → Region
 expandLines (Region f t) = lineStart (f ^. pointLine) `till` lineStart (succ $ t ^. pointLine)
 
--- | Get contents at @Region@
+-- | Get contents at 'Region'
 atRegion ∷ Editable s ⇒ Region → Lens' (Contents s) (Contents s)
 atRegion r = lens fromc toc where
 	fromc cts = cts ^. splitted (r ^. regionTo) . _1 . splitted (r ^. regionFrom) . _2
@@ -86,15 +89,15 @@ instance ApplyMap (Replace s) where
 instance ApplyMap (e s) ⇒ ApplyMap (Chain e s) where
 	applyMap m (Chain rs) = Chain (map (applyMap m) rs)
 
--- | Cut @Region@ mapping
+-- | Cut 'Region' mapping
 cutMap ∷ Region → Map
 cutMap rgn = Map $ iso (cutRegion rgn) (insertRegion rgn)
 
--- | Opposite to @cut@
+-- | Opposite to 'cutMap'
 insertMap ∷ Region → Map
 insertMap = invert ∘ cutMap
 
--- | Update second @Region@ position as if it was data cutted at first @Region@
+-- | Update second 'Region' position as if it was data cutted at first 'Region'
 cutRegion ∷ Region → Region → Region
 cutRegion (Region is ie) (Region s e) = Region
 	(if is < s then (s .-. ie) .+. is else s)
@@ -107,25 +110,34 @@ insertRegion (Region is ie) (Region s e) = Region
 	(if is < e then (e .-. is) .+. ie else e)
 
 class (Editable s, ApplyMap (e s)) ⇒ EditAction e s where
+	-- | Make replace action over 'Region' and 'Contents'
 	replace ∷ Region → Contents s → e s
+	-- | Make 'Map' from action
 	actionMap ∷ e s → Map
+	-- | Perform action, modifying 'Contents' and returning inverse (undo) action
 	perform ∷ e s → State (Contents s) (e s)
 
+-- | Cuts region
 cut ∷ EditAction e s ⇒ Region → e s
 cut r = replace r emptyContents
 
+-- | Pastes 'Contents' at some 'Point'
 paste ∷ EditAction e s ⇒ Point → Contents s → e s
 paste p = replace (p `till` p)
 
+-- | Overwrites 'Contents' at some 'Point'
 overwrite ∷ EditAction e s ⇒ Point → Contents s → e s
 overwrite p c = replace (p `regionSize` measure c) c
 
+-- | Get undo-action
 inverse ∷ EditAction e s ⇒ Contents s → e s → e s
 inverse cts act = evalState (perform act) cts
 
+-- | Apply action to 'Contents'
 applyEdit ∷ EditAction e s ⇒ e s → Contents s → Contents s
 applyEdit act = snd ∘ runState (perform act)
 
+-- | 'applyEdit' for 'Edit'
 apply ∷ EditAction Replace s ⇒ Edit s → Contents s → Contents s
 apply = applyEdit
 
@@ -142,57 +154,44 @@ instance EditAction e s ⇒ EditAction (Chain e) s where
 		go _ [] = return []
 		go m (c : cs) = (:) <$> perform (applyMap m c) <*> go (actionMap (applyMap m c) `mappend` m) cs
 
+-- | Run edit monad and return result with updated contents
 edit ∷ EditAction Replace s ⇒ s → EditM s a → (a, s)
 edit txt act = second (view $ edited . from contents) $ runState (runEditM act) (editState txt)
 
+-- | Run edit monad and return updated contents
 edit_ ∷ EditAction Replace s ⇒ s → EditM s a → s
 edit_ txt = snd ∘ edit txt
 
-grouped ∷ EditAction Replace s ⇒ EditM s a → EditM s a
-grouped act = do
-	inGroup ← gets (isJust . view groupMap)
-	unless inGroup $ modify (set groupMap (Just mempty))
-	x ← act
-	unless inGroup $ modify (set groupMap Nothing)
-	return x
-
-push ∷ EditAction Replace s ⇒ Edit s → EditM s ()
+-- | Push action into history, also drops redo stack
+push ∷ EditAction Replace s ⇒ ActionIso (Edit s) → EditM s ()
 push e = modify (over (history . undoStack) (e :)) >> modify (set (history . redoStack) [])
 
-mapGrouped ∷ EditAction Replace s ⇒ Edit s → EditM s (Edit s)
-mapGrouped e = do
-	m ← gets (view groupMap)
-	return $ maybe id applyMap m e
-
-run_ ∷ EditAction Replace s ⇒ Edit s → EditM s (Edit s)
+-- | Run edit action and returns corresponding redo-undo action
+run_ ∷ EditAction Replace s ⇒ Edit s → EditM s (ActionIso (Edit s))
 run_ e = do
 	cts ← gets (view edited)
 	let
 		(undo', cts') = runState (perform e) cts
 	modify (set edited cts')
-	modify (over (groupMap . _Just) (mappend $ actionMap e))
-	return undo'
+	return $ ActionIso e undo'
 
+-- | Run edit action with updating undo/redo stack
 run ∷ EditAction Replace s ⇒ Edit s → EditM s ()
-run e = mapGrouped e >>= run_ >>= push
+run e = run_ e >>= push
 
+-- | Undo last action
 undo ∷ EditAction Replace s ⇒ EditM s ()
 undo = do
 	us@(~(u:_)) ← gets (view $ history . undoStack)
 	unless (null us) $ do
-		redo' ← run_ u
+		_ ← run_ (u ^. actionBack)
 		modify (over (history . undoStack) tail)
-		modify (over (history . redoStack) (redo' :))
+		modify (over (history . redoStack) (u :))
 
 redo ∷ EditAction Replace s ⇒ EditM s ()
 redo = do
 	rs@(~(r:_)) ← gets (view $ history . redoStack)
 	unless (null rs) $ do
-		undo' ← run_ r
+		_ ← run_ (r ^. action)
 		modify (over (history . redoStack) tail)
-		modify (over (history . undoStack) (undo' :))
-
-update ∷ (EditAction Replace s, ApplyMap a) ⇒ a → EditM s a
-update x = do
-	m ← gets (view groupMap)
-	return $ maybe id applyMap m x
+		modify (over (history . undoStack) (r :))

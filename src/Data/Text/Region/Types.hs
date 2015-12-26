@@ -8,8 +8,9 @@ module Data.Text.Region.Types (
 	concatCts, splitCts, splitted,
 	Editable(..), contents, by, measure,
 	Replace(..), replaceRegion, replaceWith, Chain(..), chain, Edit,
+	ActionIso(..), action, actionBack,
 	ActionStack(..), undoStack, redoStack, emptyStack,
-	EditState(..), editState, history, edited, groupMap,
+	EditState(..), editState, history, edited,
 	EditM(..),
 
 	module Data.Group
@@ -51,13 +52,13 @@ instance Monoid Point where
 instance Group Point where
 	invert (Point l c) = Point (negate l) (negate c)
 
-type Size = Point
-
--- | Distance between points is measured in lines and columns.
+-- | Distance between 'Point's is measured in lines and columns.
 -- And it is defined, that distance between point at l:c and point (l + 1):0 is one line no matter c is
 -- because we need to go to new line to reach destination point
 -- Columns are taken into account only if points are on the same line
--- @pt .-. base@ is distance from @base@ to @pt@
+type Size = Point
+
+-- | @pt .-. base@ is distance from @base@ to @pt@
 -- Distance can't be less then zero lines and columns
 (.-.) ∷ Point → Point → Point
 Point l c .-. Point bl bc
@@ -71,7 +72,7 @@ Point l c .-. Point bl bc
 	| l ≡ 0 = Point bl (c + bc)
 	| otherwise = Point (l + bl) c
 
--- | Region from @Point@ to @Point@
+-- | Region from 'Point' to another
 data Region = Region {
 	_regionFrom ∷ Point,
 	_regionTo ∷ Point }
@@ -86,12 +87,12 @@ instance FromJSON Region where
 	parseJSON = withObject "region" $ \v -> Region <$> v .: "from" <*> v .: "to"
 
 -- | Main idea is that there are only two basic actions, that changes regions: inserting and cutting
--- When something is cutted out or inserted in, region positions must be updated
+-- When something is cutted out or inserted in, 'Region' positions must be updated
 -- All editings can be represented as many cuts and inserts, so we can combine them to get function
 -- which maps source regions to regions on updated data
--- Because insert is dual to cut (and therefore composes iso), we can also get function to map regions back
+-- Because insert is dual to cut (and therefore composes something like iso), we can also get function to map regions back
 -- Combining this functions while edit, we get function, that maps regions from source data to edited one
--- To get back function, we must also combine opposite actions, or we can represent actions as isomorphisms
+-- To get back function, we must also combine opposite actions, or we can represent actions as 'Iso'
 -- Same idea goes for modifying contents, represent each action as isomorphism and combine them together
 newtype Map = Map { mapIso :: Iso' Region Region }
 
@@ -102,9 +103,10 @@ instance Monoid Map where
 instance Group Map where
 	invert (Map f) = Map (from f)
 
--- | Contents is list of lines
+-- | Contents is list of lines, list must have at least one (maybe empty) line
 type Contents a = [a]
 
+-- | Empty contents are contents with one empty line
 emptyContents ∷ Monoid a ⇒ Contents a
 emptyContents = [mempty]
 
@@ -115,19 +117,24 @@ checkCts cs = cs
 concatCts ∷ Monoid a ⇒ Contents a → Contents a → Contents a
 concatCts ls rs = init (checkCts ls) ++ [last (checkCts ls) `mappend` head (checkCts rs)] ++ tail (checkCts rs)
 
+-- | Split 'Contents' at some 'Point'
 splitCts ∷ Editable a ⇒ Point → Contents a → (Contents a, Contents a)
 splitCts (Point l c) cts = (take l cts ++ [p], s : drop (succ l) cts) where
 	(p, s) = splitContents c (cts !! l)
 
+-- | Get splitted 'Contents' at some 'Point'
 splitted ∷ Editable a ⇒ Point → Iso' (Contents a) (Contents a, Contents a)
 splitted p = iso (splitCts p) (uncurry concatCts)
 
+-- | Something editable, string types implements this
 class Monoid a ⇒ Editable a where
+	-- | Split editable at some position
 	splitContents ∷ Int → a → (a, a)
 	contentsLength ∷ a → Int
 	splitLines ∷ a → [a]
 	joinLines ∷ [a] → a
 
+-- | Get 'Contents' for some 'Editable', splitting lines
 contents ∷ (Editable a, Editable b) ⇒ Iso a b (Contents a) (Contents b)
 contents = iso splitLines joinLines
 
@@ -148,14 +155,16 @@ instance Editable Text where
 	splitLines = T.split (≡ '\n')
 	joinLines = T.intercalate "\n"
 
--- | Contents size
+-- | Contents 'Size'
 measure ∷ Editable s ⇒ Contents s → Size
 measure [] = error "Invalid input"
 measure cts = Point (pred $ length cts) (contentsLength $ last cts)
 
 -- | Serializable edit action
 data Replace s = Replace {
+	-- | 'Region' to replace
 	_replaceRegion ∷ Region,
+	-- | 'Contents' to replace with
 	_replaceWith ∷ Contents s }
 		deriving (Eq)
 
@@ -170,30 +179,73 @@ instance (Editable s, FromJSON s) ⇒ FromJSON (Replace s) where
 instance (Editable s, ToJSON s) ⇒ Show (Replace s) where
 	show = L.unpack ∘ encode
 
+-- | Chain of edit actions
 newtype Chain e s = Chain {
 	_chain ∷ [e s] } deriving (Eq, Show, Monoid)
 
 makeLenses ''Chain
 
+instance ToJSON (e s) ⇒ ToJSON (Chain e s) where
+	toJSON = toJSON ∘ _chain
+
+instance FromJSON (e s) ⇒ FromJSON (Chain e s) where
+	parseJSON = fmap Chain ∘ parseJSON
+
 type Edit s = Chain Replace s
 
+-- | Some action with its inverse
+data ActionIso e = ActionIso {
+	_action ∷ e,
+	_actionBack ∷ e }
+
+makeLenses ''ActionIso
+
+instance Monoid e ⇒ Monoid (ActionIso e) where
+	mempty = ActionIso mempty mempty
+	ActionIso l l' `mappend` ActionIso r r' = ActionIso (l `mappend` r) (r' `mappend` l')
+
+instance Monoid e ⇒ Group (ActionIso e) where
+	invert (ActionIso f b) = ActionIso b f
+
+instance ToJSON e ⇒ ToJSON (ActionIso e) where
+	toJSON (ActionIso f b) = object ["fore" .= f, "back" .= b]
+
+instance FromJSON e ⇒ FromJSON (ActionIso e) where
+	parseJSON = withObject "action-iso" $ \v → ActionIso <$> v .: "fore" <*> v .: "back"
+
+-- | Stack of undo/redo actions
 data ActionStack e = ActionStack {
-	_undoStack ∷ [e],
-	_redoStack ∷ [e] }
+	_undoStack ∷ [ActionIso e],
+	_redoStack ∷ [ActionIso e] }
 
 makeLenses ''ActionStack
+
+instance ToJSON e ⇒ ToJSON (ActionStack e) where
+	toJSON (ActionStack u r) = object ["undo" .= u, "redo" .= r]
+
+instance FromJSON e ⇒ FromJSON (ActionStack e) where
+	parseJSON = withObject "action-stack" $ \v → ActionStack <$> v .: "undo" <*> v .: "redo"
 
 emptyStack ∷ ActionStack e
 emptyStack = ActionStack [] []
 
+-- | Edit state
 data EditState s = EditState {
+	-- | Edit history is stack of edit actions
 	_history ∷ ActionStack (Edit s),
-	_edited ∷ Contents s,
-	_groupMap ∷ Maybe Map }
+	-- | Currently edited data
+	_edited ∷ Contents s }
 
 makeLenses ''EditState
 
+instance (Editable s, ToJSON s) ⇒ ToJSON (EditState s) where
+	toJSON (EditState h e) = object ["history" .= h, "contents" .= view (from contents) e]
+
+instance (Editable s, FromJSON s) ⇒ FromJSON (EditState s) where
+	parseJSON = withObject "edit-state" $ \v → EditState <$> v .: "history" <*> fmap (view contents) (v .: "contents")
+
+-- | Make edit state for contents
 editState ∷ Editable s ⇒ s → EditState s
-editState x = EditState emptyStack (x ^. contents) Nothing
+editState x = EditState emptyStack (x ^. contents)
 
 newtype EditM s a = EditM { runEditM ∷ State (EditState s) a } deriving (Applicative, Functor, Monad, MonadState (EditState s))

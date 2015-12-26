@@ -15,7 +15,6 @@ library
   ghc-options: -threaded -Wall -fno-warn-tabs
   default-extensions: UnicodeSyntax
   exposed-modules:     
-    Control.Category.Inv
     Data.Text.Region
     Data.Text.Region.Types
   build-depends:
