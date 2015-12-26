@@ -80,6 +80,9 @@ class ApplyMap a where
 instance ApplyMap () where
 	applyMap _ = id
 
+instance ApplyMap a ⇒ ApplyMap [a] where
+	applyMap m = map (applyMap m)
+
 instance ApplyMap Map where
 	applyMap = mappend
 
