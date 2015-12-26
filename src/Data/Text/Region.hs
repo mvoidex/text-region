@@ -2,10 +2,10 @@
 
 module Data.Text.Region (
 	pt, start, lineStart, regionLength, till, linesSize, regionLines, emptyRegion, line,
-	regionSize, expandLines, atRegion, ApplyMap(..), cutMap, insertMap,
+	regionSize, expandLines, atRegion, ApplyMap(..), updateMap, cutMap, insertMap,
 	cutRegion, insertRegion,
 	EditAction(..), cut, paste, overwrite, inverse, applyEdit, apply,
-	edit, edit_, push, run_, run, undo, redo,
+	edit, edit_, push, run_, run, runGroup, undo, redo,
 
 	module Data.Text.Region.Types
 	) where
@@ -77,6 +77,12 @@ atRegion r = lens fromc toc where
 class ApplyMap a where
 	applyMap ∷ Map → a → a
 
+instance ApplyMap () where
+	applyMap _ = id
+
+instance ApplyMap Map where
+	applyMap = mappend
+
 instance ApplyMap Region where
 	applyMap = view ∘ mapIso
 
@@ -88,6 +94,10 @@ instance ApplyMap (Replace s) where
 
 instance ApplyMap (e s) ⇒ ApplyMap (Chain e s) where
 	applyMap m (Chain rs) = Chain (map (applyMap m) rs)
+
+-- | Update 'Region' after some action
+updateMap ∷ (EditAction e s, ApplyMap a) ⇒ e s → a → a
+updateMap = applyMap ∘ actionMap
 
 -- | Cut 'Region' mapping
 cutMap ∷ Region → Map
@@ -155,32 +165,43 @@ instance EditAction e s ⇒ EditAction (Chain e) s where
 		go m (c : cs) = (:) <$> perform (applyMap m c) <*> go (actionMap (applyMap m c) `mappend` m) cs
 
 -- | Run edit monad and return result with updated contents
-edit ∷ EditAction Replace s ⇒ s → EditM s a → (a, s)
-edit txt act = second (view $ edited . from contents) $ runState (runEditM act) (editState txt)
+edit ∷ EditAction Replace s ⇒ s → r → EditM s r a → (a, s)
+edit txt rs act = second (view $ edited . from contents) $ runState (runEditM act) (editState txt rs)
 
 -- | Run edit monad and return updated contents
-edit_ ∷ EditAction Replace s ⇒ s → EditM s a → s
-edit_ txt = snd ∘ edit txt
+edit_ ∷ EditAction Replace s ⇒ s → r → EditM s r a → s
+edit_ txt rs = snd ∘ edit txt rs
 
 -- | Push action into history, also drops redo stack
-push ∷ EditAction Replace s ⇒ ActionIso (Edit s) → EditM s ()
+push ∷ EditAction Replace s ⇒ ActionIso (Edit s) → EditM s r ()
 push e = modify (over (history . undoStack) (e :)) >> modify (set (history . redoStack) [])
 
 -- | Run edit action and returns corresponding redo-undo action
-run_ ∷ EditAction Replace s ⇒ Edit s → EditM s (ActionIso (Edit s))
+run_ ∷ (EditAction Replace s, ApplyMap r) ⇒ Edit s → EditM s r (ActionIso (Edit s))
 run_ e = do
 	cts ← gets (view edited)
 	let
 		(undo', cts') = runState (perform e) cts
 	modify (set edited cts')
+	modify (over regions (applyMap $ actionMap e))
 	return $ ActionIso e undo'
 
 -- | Run edit action with updating undo/redo stack
-run ∷ EditAction Replace s ⇒ Edit s → EditM s ()
+run ∷ (EditAction Replace s, ApplyMap r) ⇒ Edit s → EditM s r ()
 run e = run_ e >>= push
 
+-- | Run edit actions, updating undo/redo stack for each of them, but act like they was applied simultaneously
+-- For example, cutting 1-st and then 3-rd letter:
+-- @run (cut first) >> run (cut third) -- 1234 -> 234 -> 23@
+-- @runGroup [cut first, cut third] -- 1234 -> 234 -> 24@
+runGroup ∷ (EditAction Replace s, ApplyMap r) ⇒ [Edit s] → EditM s r ()
+runGroup = go mempty where
+	go _ [] = return ()
+	go m (e:es) = run e' >> go (applyMap m $ actionMap e') es where
+		e' = applyMap m e
+
 -- | Undo last action
-undo ∷ EditAction Replace s ⇒ EditM s ()
+undo ∷ (EditAction Replace s, ApplyMap r) ⇒ EditM s r ()
 undo = do
 	us@(~(u:_)) ← gets (view $ history . undoStack)
 	unless (null us) $ do
@@ -188,7 +209,7 @@ undo = do
 		modify (over (history . undoStack) tail)
 		modify (over (history . redoStack) (u :))
 
-redo ∷ EditAction Replace s ⇒ EditM s ()
+redo ∷ (EditAction Replace s, ApplyMap r) ⇒ EditM s r ()
 redo = do
 	rs@(~(r:_)) ← gets (view $ history . redoStack)
 	unless (null rs) $ do

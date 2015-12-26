@@ -10,7 +10,7 @@ module Data.Text.Region.Types (
 	Replace(..), replaceRegion, replaceWith, Chain(..), chain, Edit,
 	ActionIso(..), action, actionBack,
 	ActionStack(..), undoStack, redoStack, emptyStack,
-	EditState(..), editState, history, edited,
+	EditState(..), editState, history, edited, regions,
 	EditM(..),
 
 	module Data.Group
@@ -230,22 +230,24 @@ emptyStack ∷ ActionStack e
 emptyStack = ActionStack [] []
 
 -- | Edit state
-data EditState s = EditState {
+data EditState s r = EditState {
 	-- | Edit history is stack of edit actions
 	_history ∷ ActionStack (Edit s),
 	-- | Currently edited data
-	_edited ∷ Contents s }
+	_edited ∷ Contents s,
+	-- | Some region-based state, that will be updated on each edit
+	_regions ∷ r }
 
 makeLenses ''EditState
 
-instance (Editable s, ToJSON s) ⇒ ToJSON (EditState s) where
-	toJSON (EditState h e) = object ["history" .= h, "contents" .= view (from contents) e]
+instance (Editable s, ToJSON s, ToJSON r) ⇒ ToJSON (EditState s r) where
+	toJSON (EditState h e rs) = object ["history" .= h, "contents" .= view (from contents) e, "regions" .= rs ]
 
-instance (Editable s, FromJSON s) ⇒ FromJSON (EditState s) where
-	parseJSON = withObject "edit-state" $ \v → EditState <$> v .: "history" <*> fmap (view contents) (v .: "contents")
+instance (Editable s, FromJSON s, FromJSON r) ⇒ FromJSON (EditState s r) where
+	parseJSON = withObject "edit-state" $ \v → EditState <$> v .: "history" <*> fmap (view contents) (v .: "contents") <*> v .: "regions"
 
 -- | Make edit state for contents
-editState ∷ Editable s ⇒ s → EditState s
+editState ∷ Editable s ⇒ s → r → EditState s r
 editState x = EditState emptyStack (x ^. contents)
 
-newtype EditM s a = EditM { runEditM ∷ State (EditState s) a } deriving (Applicative, Functor, Monad, MonadState (EditState s))
+newtype EditM s r a = EditM { runEditM ∷ State (EditState s r) a } deriving (Applicative, Functor, Monad, MonadState (EditState s r))
