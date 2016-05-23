@@ -176,7 +176,7 @@ edit_ ∷ EditAction Replace s ⇒ s → r → EditM s r a → s
 edit_ txt rs = snd ∘ edit txt rs
 
 -- | Push action into history, also drops redo stack
-push ∷ EditAction Replace s ⇒ ActionIso (Edit s) → EditM s r ()
+push ∷ ActionIso (Edit s) → EditM s r ()
 push e = modify (over (history . undoStack) (e :)) >> modify (set (history . redoStack) [])
 
 -- | Run edit action and returns corresponding redo-undo action
