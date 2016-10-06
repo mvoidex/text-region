@@ -1,5 +1,5 @@
 name:                text-region
-version:             0.1.0.1
+version:             0.2.0.0
 synopsis:            Marking text regions
 description: Provides functions to update text region positions according to text edit actions
 homepage:            https://github.com/mvoidex/text-region
@@ -28,10 +28,10 @@ library
     base-unicode-symbols >= 0.2,
     aeson >= 0.9,
     bytestring >= 0.10,
-    containers >= 0.5,
+    -- containers >= 0.5,
     groups >= 0.4.0,
     lens >= 4.12,
-    mtl >= 2.2,
+    -- mtl >= 2.2,
     text >= 1.2.1
 
 test-suite test
@@ -46,7 +46,7 @@ test-suite test
     base-unicode-symbols >= 0.2,
     text-region,
     hspec,
-    containers >= 0.5,
+    -- containers >= 0.5,
     lens >= 4.12,
-    mtl >= 2.2,
+    -- mtl >= 2.2,
     text >= 1.2.1

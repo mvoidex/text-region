@@ -1,17 +1,13 @@
 {-# LANGUAGE TemplateHaskell, RankNTypes, TypeSynonymInstances, FlexibleInstances, OverloadedStrings, GeneralizedNewtypeDeriving, FlexibleContexts #-}
 
 module Data.Text.Region.Types (
-	Point(..), pointLine, pointColumn, Size, (.-.), (.+.),
+	Point(..), pointLine, pointColumn, pointRegion, Size, (.-.), (.+.),
 	Region(..), regionFrom, regionTo,
 	Map(..),
 	Contents, emptyContents,
 	concatCts, splitCts, splitted,
 	Editable(..), contents, by, measure,
-	Replace(..), replaceRegion, replaceWith, Chain(..), chain, Edit,
-	ActionIso(..), action, actionBack,
-	ActionStack(..), undoStack, redoStack, emptyStack,
-	EditState(..), editState, history, edited, regions,
-	EditM(..),
+	Replace(..), replaceRegion, replaceWith, Edit(..), replaces,
 
 	module Data.Group
 	) where
@@ -21,7 +17,6 @@ import Prelude.Unicode
 
 import Control.Category
 import Control.Lens hiding ((.=))
-import Control.Monad.State
 import Data.Aeson
 import qualified Data.ByteString.Lazy.Char8 as L
 import Data.Group
@@ -36,6 +31,10 @@ data Point = Point {
 		deriving (Eq, Ord, Read, Show)
 
 makeLenses ''Point
+
+-- | As empty region
+pointRegion ∷ Iso' Point Region
+pointRegion = iso (\p → Region p p) _regionFrom
 
 instance ToJSON Point where
 	toJSON (Point l c) = object ["line" .= l, "column" .= c]
@@ -66,7 +65,9 @@ Point l c .-. Point bl bc
 	| bl ≡ l = Point 0 (max 0 (c - bc))
 	| otherwise = Point 0 0
 
--- | Opposite to ".-.", @(pt .-. base) .+. base = pt@
+-- | Opposite to '.-.'
+--
+-- prop> (pt .-. base) .+. base = pt
 (.+.) ∷ Point → Point → Point
 (Point l c) .+. (Point bl bc)
 	| l ≡ 0 = Point bl (c + bc)
@@ -94,6 +95,7 @@ instance FromJSON Region where
 -- Combining this functions while edit, we get function, that maps regions from source data to edited one
 -- To get back function, we must also combine opposite actions, or we can represent actions as 'Iso'
 -- Same idea goes for modifying contents, represent each action as isomorphism and combine them together
+-- This works if we don't use overlapped regions
 newtype Map = Map { mapIso :: Iso' Region Region }
 
 instance Monoid Map where
@@ -179,75 +181,15 @@ instance (Editable s, FromJSON s) ⇒ FromJSON (Replace s) where
 instance (Editable s, ToJSON s) ⇒ Show (Replace s) where
 	show = L.unpack ∘ encode
 
--- | Chain of edit actions
-newtype Chain e s = Chain {
-	_chain ∷ [e s] } deriving (Eq, Show, Monoid)
+-- | Edit is several replace actions, applied simultaneously, must not overlap
+newtype Edit s = Edit {
+	_replaces ∷ [Replace s] }
+		deriving (Eq, Show, Monoid)
 
-makeLenses ''Chain
+makeLenses ''Edit
 
-instance ToJSON (e s) ⇒ ToJSON (Chain e s) where
-	toJSON = toJSON ∘ _chain
+instance (Editable s, ToJSON s) ⇒ ToJSON (Edit s) where
+	toJSON = toJSON ∘ _replaces
 
-instance FromJSON (e s) ⇒ FromJSON (Chain e s) where
-	parseJSON = fmap Chain ∘ parseJSON
-
-type Edit s = Chain Replace s
-
--- | Some action with its inverse
-data ActionIso e = ActionIso {
-	_action ∷ e,
-	_actionBack ∷ e }
-
-makeLenses ''ActionIso
-
-instance Monoid e ⇒ Monoid (ActionIso e) where
-	mempty = ActionIso mempty mempty
-	ActionIso l l' `mappend` ActionIso r r' = ActionIso (l `mappend` r) (r' `mappend` l')
-
-instance Monoid e ⇒ Group (ActionIso e) where
-	invert (ActionIso f b) = ActionIso b f
-
-instance ToJSON e ⇒ ToJSON (ActionIso e) where
-	toJSON (ActionIso f b) = object ["fore" .= f, "back" .= b]
-
-instance FromJSON e ⇒ FromJSON (ActionIso e) where
-	parseJSON = withObject "action-iso" $ \v → ActionIso <$> v .: "fore" <*> v .: "back"
-
--- | Stack of undo/redo actions
-data ActionStack e = ActionStack {
-	_undoStack ∷ [ActionIso e],
-	_redoStack ∷ [ActionIso e] }
-
-makeLenses ''ActionStack
-
-instance ToJSON e ⇒ ToJSON (ActionStack e) where
-	toJSON (ActionStack u r) = object ["undo" .= u, "redo" .= r]
-
-instance FromJSON e ⇒ FromJSON (ActionStack e) where
-	parseJSON = withObject "action-stack" $ \v → ActionStack <$> v .: "undo" <*> v .: "redo"
-
-emptyStack ∷ ActionStack e
-emptyStack = ActionStack [] []
-
--- | Edit state
-data EditState s r = EditState {
-	-- | Edit history is stack of edit actions
-	_history ∷ ActionStack (Edit s),
-	-- | Currently edited data
-	_edited ∷ Contents s,
-	-- | Some region-based state, that will be updated on each edit
-	_regions ∷ r }
-
-makeLenses ''EditState
-
-instance (Editable s, ToJSON s, ToJSON r) ⇒ ToJSON (EditState s r) where
-	toJSON (EditState h e rs) = object ["history" .= h, "contents" .= view (from contents) e, "regions" .= rs ]
-
-instance (Editable s, FromJSON s, FromJSON r) ⇒ FromJSON (EditState s r) where
-	parseJSON = withObject "edit-state" $ \v → EditState <$> v .: "history" <*> fmap (view contents) (v .: "contents") <*> v .: "regions"
-
--- | Make edit state for contents
-editState ∷ Editable s ⇒ s → r → EditState s r
-editState x = EditState emptyStack (x ^. contents)
-
-newtype EditM s r a = EditM { runEditM ∷ State (EditState s r) a } deriving (Applicative, Functor, Monad, MonadState (EditState s r))
+instance (Editable s, FromJSON s) ⇒ FromJSON (Edit s) where
+	parseJSON = fmap Edit ∘ parseJSON
