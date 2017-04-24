@@ -8,6 +8,7 @@ module Data.Text.Region.Types (
 	concatCts, splitCts, splitted,
 	Editable(..), contents, by, measure,
 	Replace(..), replaceRegion, replaceWith, Edit(..), replaces,
+	Regioned(..),
 
 	module Data.Group
 	) where
@@ -193,3 +194,18 @@ instance (Editable s, ToJSON s) ⇒ ToJSON (Edit s) where
 
 instance (Editable s, FromJSON s) ⇒ FromJSON (Edit s) where
 	parseJSON = fmap Edit ∘ parseJSON
+
+class Regioned a where
+	regions ∷ Traversal' a Region
+
+instance Regioned Point where
+	regions = pointRegion
+
+instance Regioned Region where
+	regions = id
+
+instance Regioned (Replace s) where
+	regions = replaceRegion
+
+instance Regioned (Edit s) where
+	regions = replaces . each . replaceRegion

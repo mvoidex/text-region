@@ -4,7 +4,7 @@ module Data.Text.Region (
 	pt, start, lineStart, regionLength, till, linesSize, regionLines, emptyRegion, line,
 	regionSize, expandLines, atRegion, overlaps, applyMap, cutMap, insertMap,
 	cutRegion, insertRegion,
-	EditAction(..), cut, paste, overwrite, apply, update,
+	EditAction(..), replace, cut, paste, overwrite, apply, update, undo,
 
 	module Data.Text.Region.Types
 	) where
@@ -107,7 +107,7 @@ insertRegion (Region is ie) (Region s e)
 
 class Editable s ⇒ EditAction e s where
 	-- | Make replace action over 'Region' and 'Contents'
-	replace ∷ Region → Contents s → e s
+	replaceAction ∷ Region → Contents s → e s
 	-- | Make 'Map' from action
 	actionMap ∷ e s → Map
 	-- | Perform action, modifying 'Contents'
@@ -115,34 +115,43 @@ class Editable s ⇒ EditAction e s where
 	-- | Get action undo
 	inversed ∷ e s → Contents s → e s
 
+-- | Replace region with data
+replace ∷ EditAction e s ⇒ Region → s → e s
+replace r = replaceAction r ∘ view contents
+
 -- | Cuts region
 cut ∷ EditAction e s ⇒ Region → e s
-cut r = replace r emptyContents
+cut r = replaceAction r emptyContents
 
 -- | Pastes 'Contents' at some 'Point'
-paste ∷ EditAction e s ⇒ Point → Contents s → e s
-paste p = replace (p `till` p)
+paste ∷ EditAction e s ⇒ Point → s → e s
+paste p = replaceAction (p `till` p) ∘ view contents
 
 -- | Overwrites 'Contents' at some 'Point'
-overwrite ∷ EditAction e s ⇒ Point → Contents s → e s
-overwrite p c = replace (p `regionSize` measure c) c
+overwrite ∷ EditAction e s ⇒ Point → s → e s
+overwrite p c = replaceAction (p `regionSize` measure cts) cts where
+	cts = view contents c
 
 -- | 'perform' for 'Edit'
-apply ∷ Editable s ⇒ Edit s → Contents s → Contents s
-apply = perform
+apply ∷ Editable s ⇒ Edit s → s → s
+apply = over contents ∘ perform
+
+-- | Get undo
+undo ∷ Editable s ⇒ Edit s → s → Edit s
+undo e = inversed e ∘ view contents
 
 -- | Update regions
-update ∷ Editable s ⇒ Edit s → Region → Region
-update = applyMap ∘ actionMap
+update ∷ (Editable s, Regioned r) ⇒ Edit s → r → r
+update e = over regions (applyMap ∘ actionMap $ e)
 
 instance Editable s ⇒ EditAction Replace s where
-	replace = Replace
+	replaceAction = Replace
 	actionMap (Replace r w) = insertMap (r & regionLength .~ measure w) `mappend` cutMap r
 	perform (Replace r w) cts = cts & atRegion r .~ w
 	inversed (Replace r w) cts = Replace (r & regionLength .~ measure w) (cts ^. atRegion r)
 
 instance Editable s ⇒ EditAction Edit s where
-	replace rgn txt = Edit [replace rgn txt]
+	replaceAction rgn txt = Edit [replaceAction rgn txt]
 	actionMap = foldr go mempty ∘ view replaces where
 		go r m = actionMap (over replaceRegion (applyMap m) r) `mappend` m
 	perform = snd ∘ foldr go (mempty, id) ∘ view replaces where

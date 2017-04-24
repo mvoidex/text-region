@@ -1,3 +1,5 @@
+{-# LANGUAGE FlexibleContexts #-}
+
 module Main (
 	main
 	) where
@@ -27,18 +29,18 @@ main ∷ IO ()
 main = hspec $ do
 	describe "regions are updated" $ do
 		it "should delete correctly" $
-			apply (cut quux `mappend` cut bar) (by text) ≡ by "foo baz"
+			apply (cut quux `mappend` cut bar) text ≡ "foo baz"
 		it "should perform undo" $
 			let
-				act' = mconcat [cut bar, replace quux (by nums), paste start (by xxx)]
-				undo' = inversed act' (by text)
+				act' = mconcat [cut bar, replace quux nums, paste start xxx]
+				undo' = undo act' text
 			in
-			(apply undo' ∘ apply act') (by text) ≡ by text
+			(apply undo' ∘ apply act') text ≡ text
 		it "should reverse text" $
 			let
 				go 0 _ txt = txt
-				go n c txt = go (n - 1) (over pointRegion (update act') c) (apply act' txt) where
-					act' = mconcat [cut first, paste c (txt ^. atRegion first)]
+				go n c txt = go (n - 1) (update act' c) (apply act' txt) where
+					act' = mconcat [cut first, paste c (txt ^. contents . atRegion first . from contents)]
 					first = pt 0 0 `till` pt 0 1
 			in
-			go (length text) (pt 0 (length text)) (by text) ≡ by (reverse text)
+			go (length text) (pt 0 (length text)) text ≡ reverse text
