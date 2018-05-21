@@ -22,6 +22,7 @@ import Data.Aeson
 import qualified Data.ByteString.Lazy.Char8 as L
 import Data.Group
 import Data.List
+import Data.Semigroup (Semigroup(..))
 import Data.Text (Text)
 import qualified Data.Text as T
 
@@ -42,6 +43,11 @@ instance ToJSON Point where
 
 instance FromJSON Point where
 	parseJSON = withObject "point" $ \v → Point <$> v .: "line" <*> v .: "column"
+
+instance Semigroup Point where
+	Point l c <> Point bl bc
+		| l ≡ 0 = Point bl (c + bc)
+		| otherwise = Point (l + bl) c
 
 instance Monoid Point where
 	mempty = Point 0 0
@@ -98,6 +104,9 @@ instance FromJSON Region where
 -- Same idea goes for modifying contents, represent each action as isomorphism and combine them together
 -- This works if we don't use overlapped regions
 newtype Map = Map { mapIso :: Iso' Region Region }
+
+instance Semigroup Map where
+	Map l <> Map r = Map (r . l)
 
 instance Monoid Map where
 	mempty = Map $ iso id id
@@ -185,7 +194,7 @@ instance (Editable s, ToJSON s) ⇒ Show (Replace s) where
 -- | Edit is several replace actions, applied simultaneously, must not overlap
 newtype Edit s = Edit {
 	_replaces ∷ [Replace s] }
-		deriving (Eq, Show, Monoid)
+		deriving (Eq, Show, Semigroup, Monoid)
 
 makeLenses ''Edit
 
