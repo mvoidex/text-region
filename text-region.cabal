@@ -24,7 +24,7 @@ library
     Data.Text.Region
     Data.Text.Region.Types
   build-depends:
-    base >= 4.8 && < 5,
+    base >= 4.9 && < 5,
     base-unicode-symbols >= 0.2,
     aeson >= 0.9,
     bytestring >= 0.10,
