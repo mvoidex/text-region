@@ -79,7 +79,7 @@ overlaps l r
 	| otherwise = True
 
 applyMap ∷ Map → Region → Region
-applyMap = view ∘ mapIso
+applyMap m = view $ mapIso m
 
 -- | Cut 'Region' mapping
 cutMap ∷ Region → Map
