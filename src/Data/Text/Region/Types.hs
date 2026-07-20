@@ -51,9 +51,6 @@ instance Semigroup Point where
 
 instance Monoid Point where
 	mempty = Point 0 0
-	Point l c `mappend` Point bl bc
-		| l ≡ 0 = Point bl (c + bc)
-		| otherwise = Point (l + bl) c
 
 instance Group Point where
 	invert (Point l c) = Point (negate l) (negate c)
@@ -110,7 +107,6 @@ instance Semigroup Map where
 
 instance Monoid Map where
 	mempty = Map $ iso id id
-	Map l `mappend` Map r = Map (r . l)
 
 instance Group Map where
 	invert (Map f) = Map (from f)
